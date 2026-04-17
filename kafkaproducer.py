@@ -1,21 +1,24 @@
 # kafka_producer.py
 
 import asyncio
-import json
 import ssl
 from aiokafka import AIOKafkaProducer
 
 
 class KafkaProducerClient:
     """
-    Kafka producer that accepts YAML config object (dict),
-    not filename.
-    Topic is also read from YAML.
+    Kafka Producer Library
+
+    - Accepts YAML config object (dict)
+    - Topic taken from YAML
+    - Supports bulk messages
+    - Input message = list of key/value pairs
+    - Converts to comma-separated string
     """
 
     def __init__(self, config: dict):
         self.config = config
-        self.eventhub = self.config["eventhub"]
+        self.eventhub = config["eventhub"]
         self.topic = self.eventhub["topic"]
 
         self.producer = None
@@ -46,41 +49,61 @@ class KafkaProducerClient:
 
         await self.producer.start()
 
-    async def send(self, message):
+    def _convert_to_csv(self, item: dict) -> bytes:
         """
-        Sends message to topic from YAML config
+        Convert dict to comma separated string
+
+        Example:
+        {"id":1,"name":"raj"} -> b"1,raj"
+        """
+        values = [str(v) for v in item.values()]
+        csv_line = ",".join(values)
+        return csv_line.encode("utf-8")
+
+    async def send_bulk(self, messages: list):
+        """
+        messages = [
+            {"id":1,"name":"raj"},
+            {"id":2,"name":"john"}
+        ]
+
+        Sends each record as:
+        1,raj
+        2,john
         """
 
-        if isinstance(message, dict):
-            payload = json.dumps(message).encode("utf-8")
-        elif isinstance(message, str):
-            payload = message.encode("utf-8")
-        else:
-            payload = message
+        tasks = []
 
-        return await self.producer.send_and_wait(
-            self.topic,
-            payload
-        )
+        for item in messages:
+            payload = self._convert_to_csv(item)
+
+            task = self.producer.send(
+                self.topic,
+                payload
+            )
+
+            tasks.append(task)
+
+        results = await asyncio.gather(*tasks)
+        return results
 
     async def stop(self):
         if self.producer:
             await self.producer.stop()
 
 
-# ---------------- Example Usage ----------------
+# ---------------- Example ----------------
 
 async def main():
 
     config = {
         "eventhub": {
             "bootstrap_servers": [
-                "kafka1.company.net:9093",
-                "kafka2.company.net:9093"
+                "kafka1.company.net:9093"
             ],
-            "topic": "orders-topic",
+            "topic": "employee-topic",
             "security_protocol": "SSL",
-            "client_id": "orders-app",
+            "client_id": "bulk-loader",
             "acks": "all",
             "ssl": {
                 "ca_file": "/certs/ca.pem",
@@ -90,14 +113,17 @@ async def main():
         }
     }
 
+    messages = [
+        {"id": 1, "name": "Raj", "city": "London"},
+        {"id": 2, "name": "John", "city": "Leeds"},
+        {"id": 3, "name": "Sam", "city": "Bristol"}
+    ]
+
     producer = KafkaProducerClient(config)
 
     await producer.start()
 
-    await producer.send({
-        "order_id": 101,
-        "status": "created"
-    })
+    await producer.send_bulk(messages)
 
     await producer.stop()
 
